@@ -4,6 +4,7 @@ __updated__ = '2015-10-20'
 from optparse import OptionParser
 import os
 import sys
+from math import log10
 """
 The purpose of this program is to build a fast lookup for fastq file. Every 128 bytes represents one read with the following format:
 read_id,position[PADDING]\n
@@ -41,96 +42,144 @@ def main():
             sys.exit(-1)
 
     vocab, news_groups, train_data, test_data, train_labels, test_labels = read_data(opts.vocab, opts.news_groups, opts.train_data, opts.train_label, opts.test_data, opts.test_label)
-    classifier = NaiveBayes(train_data, test_data, train_labels, test_labels)
-    classifier.predict(classifier.multinomial_dist())
-    classifier.predict(classifier.bernoulli_dist())
+    classifier = NaiveBayes(train_data, test_data, train_labels, test_labels, vocab)
+    #classifier.predict(classifier.multinomial_dist())
+
+    print "label", train_labels[2]
+
+    correct = 0
+    incorrect = 0
+    for example in train_data:
+        res = classifier.predict(classifier.bernoulli_dist, train_data[example])
+        if res == train_labels[example]:
+            correct += 1
+        else:
+            incorrect += 1
+    print "correct", "incorrect"
+    print correct, incorrect
 
 
 class NaiveBayes:
+    """
+    For probability datastructures use the names:
+    p(x|y) = p_x_y
+    """
 
-    def __init__(self, train_data, test_data, train_label, test_label):
+    def __init__(self, train_data, test_data, train_label, test_label, vocab):
         self.model = {}
         self.train_data = train_data
         self.test_data = test_data
         self.train_label = train_label
         self.test_label = test_label
+        self.p_label = {}
+        self.p_word_class = {}
+
+        self.vocab = vocab
+        self.prob_label()
         self.probability_of_word()
+
 
         """
         Compute p_x
         """
-    def predict(self, distribution):
-        pass
-
-    def bernoulli_dist(self):
+    def predict(self, distribution, x):
         """
-        x_i = number of times word i appears in document X
+        It may be possible to just use p(y = k) * (product) p(x_i | y = k)
 
-        So we need to estimate p(word_i | y )
-        p(x|y) =
-        for all words in our vocab
-            p(Word_i | y)^X_i * (1 - p(word_i |y)^(1 - X_i))
-        print "hello"
-                """
+        log(p(y=k)) = log(p(y=k)) + sum(log(p(x_i) | y = k)
+        we have p(x_i|y=k) estimated earlier, this is our training.
+        Allegedly we should be using log probabilities here which would make it a sum of logs.
 
-        pass
 
+        :param distribution: bernoulli or multinomial
+        :return: probability of class k
+        """
+        maximum = (-1, -1)
+        for i in range(1, 21):
+            val = distribution(x, i)
+            if val > maximum[0]:
+                maximum = (val, i)
+        return maximum[1]
+
+    def bernoulli_dist(self, x, k):
+        """
+        See predict docstring for now
+        log(p(y=k)) = log(p(y=k)) + sum(log(p(x_i) | y = k)
+
+        I assume y = k is a constant that we can estimate from the data.
+
+        word_id is a string right now.
+        """
+        p_y_k = self.p_label[k]
+        total = 0
+        #sparse representation
+        for word in x:
+            if k in self.p_word_class[str(word)]:
+                total += log10(self.p_word_class[str(word)][k])
+
+        log_prob_k_x = log10(p_y_k) + total #sum([log10(self.p_word_class[str(word)][k]) for word in x])
+        return log_prob_k_x
 
     def probability_of_word(self):
         """
-        Calculates P(x_i | y) = n_i/ n
-        That is, the number of times word i appears in documents with the label y / number of docs the word appears in
         :return:
         """
-        word_class_counts = {}
+
+
+        """
+
+        p_word_class =
+        num docs word i appeared in that had label y
+        _______
+        num docs that had label y
+        """
+
+        doc_label = {}
+        word_doc_label = {}
+        print len(self.vocab.keys())
+        print >> sys.stderr, "calculating all denomenators."
         for doc in self.train_data:
-            print doc
-            for word in self.train_data[doc]:
-                label = self.train_label[doc]
-                if word not in word_class_counts:
-                    word_class_counts[word] = {}
-                if label not in word_class_counts[word]:
-                    word_class_counts[word][label] = 0
-                word_class_counts[word][label] += 1
+            label = self.train_label[doc]
+            if label not in doc_label:
+                doc_label[label] = 0
+            doc_label[label] += 1
 
-        word_class_probs = {}
-        for word in word_class_counts:
-            word_class_probs[word] = {}
-            total = sum([word_class_counts[word][label] for label in word_class_counts[word]])
-            for label in word_class_counts[word]:
-                word_class_probs[word][label] = word_class_counts[word][label] / float(total)
-                print word, label, word_class_counts[word][label] / float(total)
-        self.word_class_probs = word_class_probs
+            for key in self.vocab:
+                word = self.vocab[key]
+                word_doc_label[word] = {}
+                if self.train_label[doc] == label and word in self.train_data[doc]:
+                    if label not in word_doc_label[word][doc]:
+                        word_doc_label[word][label] = 0
+                    word_doc_label[word][label] += 1
 
+        print >> sys.stderr, "calculating all numerators."
+        for word in self.vocab.values():
+            if word not in self.p_word_class:
+                self.p_word_class[word] = {}
+            for label in range(1, 21):
+                if label not in self.p_word_class[word]:
+                    self.p_word_class[word][label] = 0.0
+                self.p_word_class[word][label] = word_doc_label[word][label] / float(doc_label[label])
+
+    def prob_label(self):
+        total = 0
+        for doc in self.train_label:
+            label = self.train_label[doc]
+            if label not in self.p_label:
+                self.p_label[label] = 0
+            self.p_label[label] += 1
+            total += 1
+
+        for l in self.p_label:
+            self.p_label[l] /= float(total)
 
     def multinomial_dist(self):
         print "goodbye"
         pass
 
+
     def train(self, distribution):
         """
-        x = document
-        y = class label
-        return p(x|y)
-
-        product for all words in vocab:
-
-
-        In this assignment you will implement the Naive Bayes classifier for document classification with both the
-        Bernoulli model and the Multinomial model. For Bernoulli model, a document is described by a set of binary
-        variables, and each variable corresponds to a word in the vocabulary V and represents its presence/absence.
-        The probability of observing a document x given its class label y is then defined as:
-        p(x|y) = Y
-        |V |
-        i=1
-        p
-        xi
-        i|y
-        (1 − pi|y)
-        (1−xi)
-        where pi|y denotes the probability that the word i will be present for a document of class y. If xi = 1,
-        the contribution of this word to the product will be pi|y, otherwise it will be 1 − pi|y.
-            p(x|y) =
         """
         pass
 
